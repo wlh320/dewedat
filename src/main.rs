@@ -1,6 +1,5 @@
 use async_fs as fs;
-use async_io;
-use colour::red;
+use colour::{red, red_ln};
 use glob::glob;
 use std::error::Error;
 use std::path::{Path, PathBuf, StripPrefixError};
@@ -19,13 +18,12 @@ fn find_xor_key(b1: u8, b2: u8) -> Result<(u8, &'static str), String> {
 fn decode(cipher: &[u8], key: u8) -> Vec<u8> {
     cipher.iter().map(|b| b ^ key).collect()
 }
-
 fn replace_prefix(p: &Path, from: &Path, to: &Path) -> Result<PathBuf, StripPrefixError> {
     p.strip_prefix(from).map(|p| to.join(p))
 }
 async fn dewedat(file: &Path, source_dir: &Path, target_dir: &Path) -> Result<(), Box<dyn Error>> {
     // load file
-    let cipher = fs::read(&file).await?;
+    let cipher = fs::read(file).await?;
     // decode xor in another thread
     let (send, recv) = futures::channel::oneshot::channel();
     let (key, ext) = find_xor_key(cipher[0], cipher[1])?;
@@ -35,7 +33,7 @@ async fn dewedat(file: &Path, source_dir: &Path, target_dir: &Path) -> Result<()
     });
     let plain = recv.await.unwrap();
     // save file
-    let target_file = replace_prefix(&file, &source_dir, &target_dir)?;
+    let target_file = replace_prefix(file, source_dir, target_dir)?;
     if let Some(prefix) = target_file.parent() {
         fs::create_dir_all(prefix).await?;
     }
@@ -45,28 +43,28 @@ async fn dewedat(file: &Path, source_dir: &Path, target_dir: &Path) -> Result<()
 }
 async fn dewedat_dir(source: &str, target: &str) -> Result<(), Box<dyn Error>> {
     if !PathBuf::from(source).is_dir() {
-        Err("Invalid Source Directory")?
+        return Err("Invalid Source Directory".into());
     }
     if !PathBuf::from(target).is_dir() {
         if let Err(e) = fs::create_dir_all(target).await {
             eprintln!("Error when creating target directory:{}", e);
-            Err("Invalid Target Directory")?
+            return Err("Invalid Target Directory".into());
         }
     }
     let tasks = glob(&format!("{}/**/*.dat", source))?.map(|entry| async {
-        let entry = entry.unwrap();
-        match dewedat(&entry, &PathBuf::from(source), &PathBuf::from(target)).await {
-            Ok(()) => Ok(()),
-            Err(e) => {
+        let entry = entry.map_err(|e| {
+            red_ln!("Fail ({}) ", e);
+        })?;
+        dewedat(&entry, &PathBuf::from(source), &PathBuf::from(target))
+            .await
+            .map_err(|e| {
                 red!("Fail ({}) ", e);
                 println!("{}", entry.to_string_lossy());
-                Err(())
-            }
-        }
+            })
     });
     let results = futures::future::join_all(tasks).await;
-    let succes = results.iter().filter(|r| r.is_ok()).count();
     let total = results.len();
+    let succes = results.into_iter().filter(|r| r.is_ok()).count();
     println!("Finished ({succes}/{total}).");
     Ok(())
 }
