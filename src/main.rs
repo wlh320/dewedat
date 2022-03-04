@@ -1,9 +1,9 @@
+use async_fs as fs;
+use async_io;
 use colour::red;
 use glob::glob;
 use std::error::Error;
 use std::path::{Path, PathBuf, StripPrefixError};
-use tokio;
-use tokio::fs;
 
 fn find_xor_key(b1: u8, b2: u8) -> Result<(u8, &'static str), String> {
     match b1 ^ b2 {
@@ -13,7 +13,7 @@ fn find_xor_key(b1: u8, b2: u8) -> Result<(u8, &'static str), String> {
         b if b == 0x49 ^ 0x49 => Ok((b1 ^ 0x49, "tiff")),
         b if b == 0x4d ^ 0x4d => Ok((b1 ^ 0x4d, "tiff")),
         b if b == 0x42 ^ 0x4d => Ok((b1 ^ 0x42, "bmp")),
-        _ => Err(String::from("Not Implementation")),
+        _ => Err(String::from("Filetype Not Implementation")),
     }
 }
 fn decode(cipher: &[u8], key: u8) -> Vec<u8> {
@@ -27,7 +27,7 @@ async fn dewedat(file: &Path, source_dir: &Path, target_dir: &Path) -> Result<()
     // load file
     let cipher = fs::read(&file).await?;
     // decode xor in another thread
-    let (send, recv) = tokio::sync::oneshot::channel();
+    let (send, recv) = futures::channel::oneshot::channel();
     let (key, ext) = find_xor_key(cipher[0], cipher[1])?;
     rayon::spawn(move || {
         let plain = decode(&cipher, key);
@@ -36,7 +36,6 @@ async fn dewedat(file: &Path, source_dir: &Path, target_dir: &Path) -> Result<()
     let plain = recv.await.unwrap();
     // save file
     let target_file = replace_prefix(&file, &source_dir, &target_dir)?;
-    println!("{:?}", target_file);
     if let Some(prefix) = target_file.parent() {
         fs::create_dir_all(prefix).await?;
     }
@@ -57,11 +56,7 @@ async fn dewedat_dir(source: &str, target: &str) -> Result<(), Box<dyn Error>> {
     let tasks = glob(&format!("{}/**/*.dat", source))?.map(|entry| async {
         let entry = entry.unwrap();
         match dewedat(&entry, &PathBuf::from(source), &PathBuf::from(target)).await {
-            Ok(()) => {
-                // green!("Ok ");
-                // println!("{}", entry.to_string_lossy());
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(e) => {
                 red!("Fail ({}) ", e);
                 println!("{}", entry.to_string_lossy());
@@ -82,13 +77,14 @@ fn usage() {
     println!("./dewedat source_dir target_dir");
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<_> = std::env::args().collect();
-    if args.len() < 3 {
-        usage();
-    } else {
-        dewedat_dir(&args[1], &args[2]).await?;
-    }
-    Ok(())
+fn main() -> Result<(), Box<dyn Error>> {
+    async_io::block_on(async {
+        let args: Vec<_> = std::env::args().collect();
+        if args.len() < 3 {
+            usage();
+        } else {
+            dewedat_dir(&args[1], &args[2]).await?;
+        }
+        Ok(())
+    })
 }
